@@ -2,7 +2,7 @@
 
 ## Project Structure
 ```
-netID_EC3/
+sww35_EC3/ 
 ├── src/              # Source code
 ├── include/          # Header files
 ├── test/             # Test cases
