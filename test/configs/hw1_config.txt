@@ -1,0 +1,6 @@
+N=32
+B=8
+I=16
+ways=1
+policy=lru
+inputfile=examples/homework_addresses.txt
