@@ -8,13 +8,14 @@
 class Cache {
 public:
     struct AccessResult {
-        std::string indexHex;
-        std::string tagHex;
+        std::string index;
+        std::string tag;
         char hitMiss;
-        std::string binaryRepresentation;
+        std::string binaryRep;
         uint64_t accessTime;
         bool isColdMiss;
         bool isConflictMiss;
+        std::string originalAddress;  // Add this new field
     };
 
     Cache(int N, int B, int I, int ways = 1, ReplacementPolicy policy = ReplacementPolicy::LRU);

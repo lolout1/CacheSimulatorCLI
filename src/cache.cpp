@@ -26,7 +26,7 @@ Cache::Cache(int N, int B, int I, int ways, ReplacementPolicy policy)
 
 Cache::AccessResult Cache::access(const std::string& addrStr) {
     auto start = std::chrono::high_resolution_clock::now();
-    
+
     auto parsed = parser.parseAddress(addrStr);
     size_t wayIndex;
     bool hit = sets[parsed.index].lookup(parsed.tag, wayIndex);
@@ -54,7 +54,8 @@ Cache::AccessResult Cache::access(const std::string& addrStr) {
         parsed.toBinaryString(),
         static_cast<uint64_t>(duration.count()),
         isColdMiss,
-        isConflictMiss
+        isConflictMiss,
+        addrStr  // Add the original address to the result
     };
 }
 

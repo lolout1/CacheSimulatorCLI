@@ -4,34 +4,27 @@
 #include <fstream>
 #include <string>
 
-void CacheVisualizer::printResults(
-    const std::vector<Cache::AccessResult>& results,
-    const CacheStats& stats) {
-    std::cout << "Index\tTag\tH/M" << std::endl;
-    std::cout << std::string(30, '-') << std::endl;
-    for (const auto& result : results) {
-        std::cout << result.indexHex << "\t"
-                  << result.tagHex << "\t"
-                  << result.hitMiss << std::endl;
-    }
-    std::cout << "\nCache Statistics:" << std::endl;
-    std::cout << "-----------------" << std::endl;
-    std::cout << "Total Accesses: " << stats.totalAccesses << std::endl;
-    std::cout << "Total Hits: " << stats.hits << std::endl;
-    std::cout << "Total Misses: " << stats.misses << std::endl;
-    std::cout << "Hit Rate: " << std::fixed << std::setprecision(2)
-              << stats.getHitRate() << "%" << std::endl;
+void CacheVisualizer::printResults(const std::vector<Cache::AccessResult>& results, const CacheStats& stats) {
+    // Print header
+    std::cout << "Index\tTag\tResult\n";
 
-    if (stats.misses > 0) {
-        std::cout << "\nMiss Breakdown:" << std::endl;
-        std::cout << "---------------" << std::endl;
-        std::cout << "Cold: " << stats.coldMisses
-                  << " (" << (stats.coldMisses * 100.0 / stats.misses) << "%)" << std::endl;
-        std::cout << "Conflict: " << stats.conflictMisses
-                  << " (" << (stats.conflictMisses * 100.0 / stats.misses) << "%)" << std::endl;
-        std::cout << "Capacity: " << stats.capacityMisses
-                  << " (" << (stats.capacityMisses * 100.0 / stats.misses) << "%)" << std::endl;
+    // Print each access result
+    for (const auto& result : results) {
+        std::cout << "x" << result.index << "\t"
+                  << "x" << result.tag << "\t"
+                  << result.hitMiss << "\n";
     }
+
+    // Print statistics
+    std::cout << "\nCache Statistics:\n";
+    std::cout << "----------------\n";
+    std::cout << "Total Accesses: " << stats.totalAccesses << "\n";
+    std::cout << "Hits: " << stats.hits << "\n";
+    std::cout << "Misses: " << stats.misses << "\n";
+    std::cout << "Cold Misses: " << stats.coldMisses << "\n";
+    std::cout << "Conflict Misses: " << stats.conflictMisses << "\n";
+    std::cout << "Hit Rate: " << (stats.totalAccesses > 0 ? 
+        (static_cast<double>(stats.hits) / stats.totalAccesses * 100) : 0) << "%\n";
 }
 
 void CacheVisualizer::generateVisualization(
@@ -48,14 +41,13 @@ void CacheVisualizer::generateVisualization(
         for (size_t i = 0; i < results.size(); ++i) {
             accessPatternFile << i << " "
                               << (results[i].hitMiss == 'H' ? 1 : 0) << " "
-                              << results[i].indexHex << " "
-                              << results[i].tagHex << std::endl;
+                              << results[i].index << " "
+                              << results[i].tag << std::endl;
         }
 
         std::ofstream scriptFile("cache_visualization.gp");
         scriptFile << "set terminal pngcairo enhanced size 1200,800\n";
         scriptFile << "set output '" << outputFile << "'\n";
-        scriptFile << "set multiplot layout 2,1\n";
 
         // Hit rate plot
         scriptFile << "set title 'Cache Hit Rate Over Time'\n";
