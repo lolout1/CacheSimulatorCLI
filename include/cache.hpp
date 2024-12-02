@@ -8,19 +8,24 @@
 class Cache {
 public:
     struct AccessResult {
+        std::string originalAddress;
         std::string index;
         std::string tag;
+        std::string offset;
         char hitMiss;
-        std::string binaryRep;
-        uint64_t accessTime;
         bool isColdMiss;
         bool isConflictMiss;
-        std::string originalAddress;  // Add this new field
+        int replacedWay;
+        std::string replacementInfo;
     };
 
     Cache(int N, int B, int I, int ways = 1, ReplacementPolicy policy = ReplacementPolicy::LRU);
     AccessResult access(const std::string& addrStr);
     const CacheStats& getStats() const;
+
+    // Getter for sets to support OPTIMAL policy preprocessing
+    const std::vector<CacheSet>& getSets() const { return sets; }
+    std::vector<CacheSet>& getSets() { return sets; }
 
 private:
     const int N;

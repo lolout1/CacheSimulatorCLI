@@ -1,95 +1,112 @@
 #include "cache_set.hpp"
 #include <algorithm>
 #include <stdexcept>
-#include <cmath>
+#include <iostream>
+#include <random>
+#include <chrono>
 
-CacheSet::CacheSet(int ways, int blockSize, ReplacementPolicy p) 
-    : entries(ways, CacheEntry(blockSize)), 
-      policy(p), 
-      accessCount(0),
-      gen(rd()) {
-    if (p == ReplacementPolicy::PLRU) {
-        plruRoot = std::make_shared<PLRUNode>();
-        int depth = static_cast<int>(std::ceil(std::log2(ways)));
-        initializePLRUTree(ways);
-    }
-    fifoQueue.reserve(ways);
+// Constructor implementation
+CacheSet::CacheSet(int ways, int blockSize, ReplacementPolicy p)
+    : entries(ways, CacheEntry(blockSize)),
+      policy(p),
+      dis(0, ways - 1) {
+    state.offsetBits = static_cast<int>(std::log2(blockSize));
+    state.indexBits = static_cast<int>(std::log2(ways));
 }
 
-CacheSet::CacheSet(const CacheSet& other) 
+// Copy constructor
+CacheSet::CacheSet(const CacheSet& other)
     : entries(other.entries),
       policy(other.policy),
       accessCount(other.accessCount),
-      fifoQueue(other.fifoQueue),
-      frequencyCount(other.frequencyCount),
-      gen(rd()) {
-    if (other.plruRoot) {
-        plruRoot = std::make_shared<PLRUNode>(*other.plruRoot);
-    }
+      state(other.state),
+      gen(std::random_device{}()),
+      dis(other.dis),
+      fifoQueue(other.fifoQueue) {
 }
 
-CacheSet::CacheSet(CacheSet&& other) noexcept 
+// Move constructor
+CacheSet::CacheSet(CacheSet&& other) noexcept
     : entries(std::move(other.entries)),
-      plruRoot(std::move(other.plruRoot)),
       policy(other.policy),
       accessCount(other.accessCount),
-      fifoQueue(std::move(other.fifoQueue)),
-      frequencyCount(std::move(other.frequencyCount)),
-      gen(std::move(other.gen)) {}
+      state(std::move(other.state)),
+      gen(std::random_device{}()),
+      dis(other.dis),
+      fifoQueue(std::move(other.fifoQueue)) {
+}
 
+// Copy assignment operator
 CacheSet& CacheSet::operator=(const CacheSet& other) {
     if (this != &other) {
         entries = other.entries;
         policy = other.policy;
         accessCount = other.accessCount;
+        state = other.state;
         fifoQueue = other.fifoQueue;
-        frequencyCount = other.frequencyCount;
-        if (other.plruRoot) {
-            plruRoot = std::make_shared<PLRUNode>(*other.plruRoot);
-        } else {
-            plruRoot.reset();
-        }
+        
+        // Reset RNG
+        gen.seed(std::random_device{}());
+        dis = other.dis;
     }
     return *this;
 }
 
+// Move assignment operator
 CacheSet& CacheSet::operator=(CacheSet&& other) noexcept {
     if (this != &other) {
         entries = std::move(other.entries);
-        plruRoot = std::move(other.plruRoot);
         policy = other.policy;
         accessCount = other.accessCount;
+        state = std::move(other.state);
         fifoQueue = std::move(other.fifoQueue);
-        frequencyCount = std::move(other.frequencyCount);
-        gen = std::move(other.gen);
+        
+        // Reset RNG
+        gen.seed(std::random_device{}());
+        dis = other.dis;
     }
     return *this;
 }
 
+// Lookup method with wayIndex
 bool CacheSet::lookup(uint64_t tag, size_t& wayIndex) {
+    bool hit = false;
     for (size_t i = 0; i < entries.size(); ++i) {
         if (entries[i].valid && entries[i].tag == tag) {
             wayIndex = i;
-            updateAccess(i);
-            return true;
+            hit = true;
+            break;
         }
     }
-    return false;
-}
 
-void CacheSet::updateAccess(size_t wayIndex) {
-    entries[wayIndex].lastUsed = ++accessCount;
-    entries[wayIndex].accessCount++;
-    
-    if (policy == ReplacementPolicy::PLRU) {
-        updatePLRUBits(wayIndex);
+    if (hit) {
+        entries[wayIndex].lastUsed = ++accessCount;
+        entries[wayIndex].accessCount++;
     }
-    
-    frequencyCount[entries[wayIndex].tag]++;
+
+    // Update current position for OPTIMAL policy
+    if (policy == ReplacementPolicy::OPTIMAL) {
+        state.currentPosition++;
+    }
+
+    return hit;
 }
 
+// Insert method
+void CacheSet::insert(uint64_t tag) {
+    size_t victimWay = findVictim(tag);
+    
+    // Replace the victim entry
+    entries[victimWay].tag = tag;
+    entries[victimWay].valid = true;
+    entries[victimWay].lastUsed = ++accessCount;
+    entries[victimWay].insertionTime = std::chrono::system_clock::now();
+    entries[victimWay].accessCount = 1;
+}
+
+// Find victim way based on replacement policy
 size_t CacheSet::findVictim(uint64_t newTag) {
-    // First check for empty slots
+    // First check for invalid entries
     for (size_t i = 0; i < entries.size(); ++i) {
         if (!entries[i].valid) {
             if (policy == ReplacementPolicy::FIFO) {
@@ -99,112 +116,151 @@ size_t CacheSet::findVictim(uint64_t newTag) {
         }
     }
 
+    // Apply the appropriate replacement policy
     switch (policy) {
         case ReplacementPolicy::LRU:
             return findLRUVictim();
         case ReplacementPolicy::MRU:
             return findMRUVictim();
-        case ReplacementPolicy::RANDOM:
-            return findRandomVictim();
         case ReplacementPolicy::FIFO:
             return findFIFOVictim();
-        case ReplacementPolicy::PLRU:
-            return findPLRUVictim();
-        case ReplacementPolicy::LFU:
-            return findLFUVictim();
-        case ReplacementPolicy::ARC:
-            return findARCVictim();
+        case ReplacementPolicy::OPTIMAL:
+            return findOptimalVictim(newTag);
+        case ReplacementPolicy::RANDOM:
+            return findRandomVictim();
         default:
             throw std::runtime_error("Unknown replacement policy");
     }
 }
 
-size_t CacheSet::findLRUVictim() {
-    return std::min_element(entries.begin(), entries.end(),
-        [](const CacheEntry& a, const CacheEntry& b) {
-            return a.lastUsed < b.lastUsed;
-        }) - entries.begin();
-}
-
-size_t CacheSet::findMRUVictim() {
-    return std::max_element(entries.begin(), entries.end(),
-        [](const CacheEntry& a, const CacheEntry& b) {
-            return a.lastUsed < b.lastUsed;
-        }) - entries.begin();
-}
-
-size_t CacheSet::findRandomVictim() {
-    std::uniform_int_distribution<> dis(0, entries.size() - 1);
-    return dis(gen);
-}
-
-size_t CacheSet::findFIFOVictim() {
-    size_t victim = fifoQueue.front();
-    fifoQueue.erase(fifoQueue.begin());
-    fifoQueue.push_back(victim);
-    return victim;
-}
-
-void CacheSet::initializePLRUTree(int ways) {
-    int depth = static_cast<int>(std::ceil(std::log2(ways)));
-    initializePLRUNode(plruRoot.get(), depth);
-}
-
-void CacheSet::initializePLRUNode(PLRUNode* node, int depth) {
-    if (depth > 0) {
-        node->left = std::make_shared<PLRUNode>();
-        node->right = std::make_shared<PLRUNode>();
-        initializePLRUNode(node->left.get(), depth - 1);
-        initializePLRUNode(node->right.get(), depth - 1);
-    }
-}
-
-size_t CacheSet::findPLRUVictim() {
-    PLRUNode* node = plruRoot.get();
-    size_t index = 0;
-    int depth = static_cast<int>(std::ceil(std::log2(entries.size())));
+// LRU victim selection
+size_t CacheSet::findLRUVictim() const {
+    size_t oldestWay = 0;
+    uint64_t oldestAccess = std::numeric_limits<uint64_t>::max();
     
-    for (int i = 0; i < depth; i++) {
-        if (node->bit) {
-            node = node->right.get();
-            index = (index << 1) | 1;
-        } else {
-            node = node->left.get();
-            index = index << 1;
+    for (size_t way = 0; way < entries.size(); ++way) {
+        if (entries[way].lastUsed < oldestAccess) {
+            oldestWay = way;
+            oldestAccess = entries[way].lastUsed;
         }
     }
     
-    return index % entries.size();
+    return oldestWay;
 }
 
-void CacheSet::updatePLRUBits(size_t accessedWay) {
-    PLRUNode* node = plruRoot.get();
-    int depth = static_cast<int>(std::ceil(std::log2(entries.size())));
+// MRU victim selection
+size_t CacheSet::findMRUVictim() const {
+    size_t mostRecentWay = 0;
+    uint64_t mostRecentAccess = 0;
     
-    for (int i = depth - 1; i >= 0; i--) {
-        bool bit = (accessedWay >> i) & 1;
-        node->bit = !bit;
-        node = bit ? node->right.get() : node->left.get();
+    for (size_t way = 0; way < entries.size(); ++way) {
+        if (entries[way].lastUsed > mostRecentAccess) {
+            mostRecentWay = way;
+            mostRecentAccess = entries[way].lastUsed;
+        }
+    }
+    
+    return mostRecentWay;
+}
+
+// FIFO victim selection
+size_t CacheSet::findFIFOVictim() const {
+    size_t oldestWay = 0;
+    auto oldestTime = std::chrono::system_clock::now();
+    
+    for (size_t way = 0; way < entries.size(); ++way) {
+        if (entries[way].insertionTime < oldestTime) {
+            oldestWay = way;
+            oldestTime = entries[way].insertionTime;
+        }
+    }
+    
+    return oldestWay;
+}
+
+// Random victim selection
+size_t CacheSet::findRandomVictim() const {
+    return dis(gen);
+}
+
+// Optimal victim selection
+size_t CacheSet::findOptimalVictim(uint64_t newTag) {
+    // First check for invalid entries
+    for (size_t i = 0; i < entries.size(); ++i) {
+        if (!entries[i].valid) {
+            return i;
+        }
+    }
+    
+    size_t victimWay = 0;
+    size_t furthestNextUse = 0;
+    bool foundNoFutureUse = false;
+
+    // Find the entry that will be used furthest in the future
+    for (size_t i = 0; i < entries.size(); i++) {
+        uint64_t tag = entries[i].tag;
+        size_t nextUse = getNextAccess(tag);
+        
+        // If this entry won't be used again, it's a perfect candidate
+        if (nextUse == std::numeric_limits<size_t>::max()) {
+            if (!foundNoFutureUse) {
+                victimWay = i;
+                foundNoFutureUse = true;
+            }
+            continue;
+        }
+        
+        // If we haven't found an entry with no future use,
+        // keep track of the entry used furthest in the future
+        if (!foundNoFutureUse && nextUse > furthestNextUse) {
+            furthestNextUse = nextUse;
+            victimWay = i;
+        }
+    }
+    
+    return victimWay;
+}
+
+// Get next access for a tag
+size_t CacheSet::getNextAccess(uint64_t tag) const {
+    auto it = state.futureMap.find(tag);
+    if (it == state.futureMap.end()) {
+        return std::numeric_limits<size_t>::max();
+    }
+    return it->second.getNextAccess(state.currentPosition);
+}
+
+// Update optimal state (placeholder)
+void CacheSet::updateOptimalState() {
+    // This method is now handled in the lookup method
+}
+
+// Preprocess trace for optimal policy
+void CacheSet::preprocessTrace(const std::vector<uint64_t>& trace) {
+    if (trace.empty()) {
+        std::cerr << "Warning: Empty trace provided for OPTIMAL policy" << std::endl;
+        return;
+    }
+
+    state.fullTrace = trace;
+    state.currentPosition = 0;
+    state.futureMap.clear();
+    
+    // Build future access map with more robust tag extraction
+    for (size_t i = 0; i < trace.size(); i++) {
+        // Ensure we handle different address representations
+        uint64_t tag = trace[i] >> (state.offsetBits + state.indexBits);
+        state.futureMap[tag].positions.push_back(i);
+    }
+    
+    // Initialize next access tracking with error checking
+    for (auto& [tag, access] : state.futureMap) {
+        // Sort positions to ensure correct next access tracking
+        std::sort(access.positions.begin(), access.positions.end());
     }
 }
 
-size_t CacheSet::findLFUVictim() {
-    return std::min_element(entries.begin(), entries.end(),
-        [this](const CacheEntry& a, const CacheEntry& b) {
-            return frequencyCount[a.tag] < frequencyCount[b.tag];
-        }) - entries.begin();
-}
-
-size_t CacheSet::findARCVictim() {
-    auto now = std::chrono::system_clock::now();
-    return std::min_element(entries.begin(), entries.end(),
-        [&now](const CacheEntry& a, const CacheEntry& b) {
-            double aScore = a.accessCount * 0.7 + 
-                std::chrono::duration_cast<std::chrono::seconds>
-                (now - a.insertionTime).count() * 0.3;
-            double bScore = b.accessCount * 0.7 + 
-                std::chrono::duration_cast<std::chrono::seconds>
-                (now - b.insertionTime).count() * 0.3;
-            return aScore < bScore;
-        }) - entries.begin();
+// Set optimal trace
+void CacheSet::setOptimalTrace(const std::vector<uint64_t>& trace) {
+    preprocessTrace(trace);
 }

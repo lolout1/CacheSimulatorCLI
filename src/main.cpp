@@ -5,6 +5,8 @@
 #include <CLI11.hpp>
 #include "cache.hpp"
 #include "visualization.hpp"
+#include "address_parser.hpp"
+#include "policies.hpp"
 
 struct CLIParams {
     int N = 16;            // Address space size in 2^N bytes (default: 16)
@@ -28,9 +30,21 @@ std::vector<std::string> readAddresses(const std::string& filename) {
     std::string line;
     while (std::getline(file, line)) {
         if (!line.empty()) {
-            if (line.substr(0, 1) != "x") {
+            // Allow both 0x and x prefixes, and handle decimal addresses
+            if (line.find("0x") == std::string::npos && line.find("x") == std::string::npos) {
+                // If no hex prefix, assume it's a hex address
+                line = "0x" + line;
+            }
+            
+            // Remove any leading 'x' or '0x'
+            if (line[0] == 'x') {
+                line = "0" + line;
+            } else if (line.substr(0, 2) == "0x") {
+                // Already in correct format
+            } else {
                 throw std::runtime_error("Invalid address format: " + line);
             }
+            
             // Only add address if we haven't seen it before in this file
             if (uniqueAddresses.insert(line).second) {
                 addresses.push_back(line);
@@ -58,22 +72,23 @@ int main(int argc, char** argv) {
         app.add_flag("--viz", params.generateVisualization, "Generate visualization");
         app.add_option("--viz-file", params.visualizationFile, 
             "Visualization output file (default: cache_visualization.png)");
-        std::map<std::string, ReplacementPolicy> policyMap{
+
+        // Define policy mapping
+        std::map<std::string, ReplacementPolicy> policyMap = {
             {"lru", ReplacementPolicy::LRU},
             {"mru", ReplacementPolicy::MRU},
             {"optimal", ReplacementPolicy::OPTIMAL},
-            {"random", ReplacementPolicy::RANDOM},
-            {"fifo", ReplacementPolicy::FIFO},
-            {"plru", ReplacementPolicy::PLRU},
-            {"lfu", ReplacementPolicy::LFU},
-            {"arc", ReplacementPolicy::ARC}
+            {"fifo", ReplacementPolicy::FIFO}
         };
-        std::string policyStr = "lru";
-        app.add_option("-p,--policy", policyStr, 
-            "Replacement policy (lru/mru/optimal/random/fifo/plru/lfu/arc)")
+
+        // Parse replacement policy
+        app.add_option("-p,--policy", params.policy, "Cache replacement policy")
             ->transform(CLI::CheckedTransformer(policyMap, CLI::ignore_case));
+
         CLI11_PARSE(app, argc, argv);
-        params.policy = policyMap[policyStr];
+
+        // Get policy string for output
+        std::string policyStr = getPolicyName(params.policy);
 
         // Create cache with given configuration
         Cache cache(params.N, params.B, params.I, params.ways, params.policy);
@@ -95,6 +110,21 @@ int main(int argc, char** argv) {
             auto addresses = readAddresses(params.filename);
             std::vector<Cache::AccessResult> results;
             
+            // When creating cache, pass full trace to sets for OPTIMAL policy
+            if (params.policy == ReplacementPolicy::OPTIMAL) {
+                std::vector<uint64_t> fullTrace;
+                for (const auto& addr : addresses) {
+                    // Store original addresses instead of just tags
+                    fullTrace.push_back(std::stoull(addr, 0, 16));
+                }
+                
+                // Use non-const getSets() to modify sets
+                auto& cacheSets = const_cast<std::vector<CacheSet>&>(cache.getSets());
+                for (auto& set : cacheSets) {
+                    set.setOptimalTrace(fullTrace);
+                }
+            }
+
             for (const auto& addr : addresses) {
                 results.push_back(cache.access(addr));
             }
@@ -132,6 +162,20 @@ int main(int argc, char** argv) {
                 std::cout << "\nProcessing file: " << filename << std::endl;
                 std::cout << "----------------------------------------\n";
                 
+                // When creating cache, pass full trace to sets for OPTIMAL policy
+                if (params.policy == ReplacementPolicy::OPTIMAL) {
+                    std::vector<uint64_t> fullTrace;
+                    for (const auto& addr : addresses) {
+                        fullTrace.push_back(std::stoull(addr, 0, 16));
+                    }
+                    
+                    // Use non-const getSets() to modify sets
+                    auto& cacheSets = const_cast<std::vector<CacheSet>&>(cache.getSets());
+                    for (auto& set : cacheSets) {
+                        set.setOptimalTrace(fullTrace);
+                    }
+                }
+
                 for (const auto& addr : addresses) {
                     results.push_back(cache.access(addr));
                 }
